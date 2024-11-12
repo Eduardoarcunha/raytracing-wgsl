@@ -151,28 +151,142 @@ fn envoriment_color(direction: vec3f, color1: vec3f, color2: vec3f) -> vec3f
   return col;
 }
 
-fn check_ray_collision(r: ray, max: f32) -> hit_record
-{
-  var spheresCount = i32(uniforms[19]);
-  var quadsCount = i32(uniforms[20]);
-  var boxesCount = i32(uniforms[21]);
-  var trianglesCount = i32(uniforms[22]);
-  var meshCount = i32(uniforms[27]);
+fn check_ray_collision(r: ray, max: f32) -> hit_record {
+    // Get counts of different object types from uniforms
+    var spheresCount = i32(uniforms[19]);
+    var quadsCount = i32(uniforms[20]);
+    var boxesCount = i32(uniforms[21]);
+    var trianglesCount = i32(uniforms[22]);
+    var meshCount = i32(uniforms[27]);
 
-  var record = hit_record(RAY_TMAX, vec3f(0.0), vec3f(0.0), vec4f(0.0), vec4f(0.0), false, false);
-  var closest = record;
+    // Initialize records for hit testing
+    var record = hit_record(RAY_TMAX, vec3f(0.0), vec3f(0.0), vec4f(0.0), vec4f(0.0), false, false);
+    var closest = record;
+    var closest_so_far = max;
 
-  return closest;
+    // Check all spheres
+    for(var i = 0; i < spheresCount; i++) {
+        var sphere = spheresb[i];
+        var local_record = record;
+        
+        hit_sphere(sphere.transform.xyz, sphere.transform.w, r, &local_record, closest_so_far);
+        
+        if(local_record.hit_anything) {
+            closest_so_far = local_record.t;
+            local_record.object_color = sphere.color;
+            local_record.object_material = sphere.material;
+            closest = local_record;
+        }
+    }
+
+    // Check all quads
+    for(var i = 0; i < quadsCount; i++) {
+        var quad = quadsb[i];
+        var local_record = record;
+        
+        hit_quad(r, quad.Q, quad.u, quad.v, &local_record, closest_so_far);
+        
+        if(local_record.hit_anything) {
+            closest_so_far = local_record.t;
+            local_record.object_color = quad.color;
+            local_record.object_material = quad.material;
+            closest = local_record;
+        }
+    }
+
+    // Check all boxes
+    for(var i = 0; i < boxesCount; i++) {
+        var box = boxesb[i];
+        var local_record = record;
+        
+        hit_box(r, box.center.xyz, box.radius.xyz, &local_record, closest_so_far);
+        
+        if(local_record.hit_anything) {
+            closest_so_far = local_record.t;
+            local_record.object_color = box.color;
+            local_record.object_material = box.material;
+            closest = local_record;
+        }
+    }
+
+    // Check all triangles
+    for(var i = 0; i < trianglesCount; i++) {
+        var tri = trianglesb[i];
+        var local_record = record;
+        
+        hit_triangle(r, tri.v0.xyz, tri.v1.xyz, tri.v2.xyz, &local_record, closest_so_far);
+        
+        if(local_record.hit_anything) {
+            closest_so_far = local_record.t;
+            // Note: Triangles might need color/material from a different source
+            // like mesh or additional properties in triangle struct
+            closest = local_record;
+        }
+    }
+
+    // Check all meshes (collections of triangles)
+    for(var i = 0; i < meshCount; i++) {
+        var mesh = meshb[i];
+        
+        // Skip if mesh is hidden
+        if(mesh.show_bb == 0.0) {
+            continue;
+        }
+        
+        // Check each triangle in the mesh
+        for(var j = i32(mesh.start); j < i32(mesh.end); j++) {
+            var tri = trianglesb[j];
+            var local_record = record;
+            
+            hit_triangle(r, tri.v0.xyz, tri.v1.xyz, tri.v2.xyz, &local_record, closest_so_far);
+            
+            if(local_record.hit_anything) {
+                closest_so_far = local_record.t;
+                local_record.object_color = mesh.color;
+                local_record.object_material = mesh.material;
+                closest = local_record;
+            }
+        }
+    }
+
+    return closest;
 }
+// Simulates a diffuse (Lambertian) material reflection
+// Parameters:
+//   normal: Surface normal at hit point
+//   absorption: Material roughness (affects scatter direction)
+//   random_sphere: Random point in unit sphere for scatter direction
+//   rng_state: Random number generator state for additional randomization
+fn lambertian(normal: vec3f, absorption: f32, random_sphere: vec3f, rng_state: ptr<function, u32>) -> material_behaviour {
+    var scatter_direction: vec3f;
+    
+    // Perfect lambertian reflection would use normal + random unit vector
+    // Modified by absorption (roughness) to allow for more control
+    if (absorption <= 0.0) {
+        // Pure diffuse reflection: scatter in random direction in hemisphere
+        scatter_direction = normal + random_sphere;
+    } else {
+        // Mix between pure diffuse and more focused reflection
+        // Higher absorption means more scattering closer to the normal
+        scatter_direction = normalize(normal + absorption * random_sphere);
+    }
 
-fn lambertian(normal : vec3f, absorption: f32, random_sphere: vec3f, rng_state: ptr<function, u32>) -> material_behaviour
-{
-  return material_behaviour(true, vec3f(0.0));
+    // Catch degenerate scatter direction
+    // If scatter_direction is zero (or very close), use the normal
+    if (length(scatter_direction) < 0.001) {
+        scatter_direction = normal;
+    }
+
+    // Always scatter (true) with the calculated direction
+    return material_behaviour(true, normalize(scatter_direction));
 }
 
 fn metal(normal : vec3f, direction: vec3f, fuzz: f32, random_sphere: vec3f) -> material_behaviour
 {
-  return material_behaviour(false, vec3f(0.0));
+  var reflect = direction - 2 * dot(direction, normal) * normal;
+  var scatter_direction = reflect + fuzz * random_sphere;
+
+  return material_behaviour(true, normalize(reflect));
 }
 
 fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontface: bool, random_sphere: vec3f, fuzz: f32, rng_state: ptr<function, u32>) -> material_behaviour
@@ -185,23 +299,77 @@ fn emmisive(color: vec3f, light: f32) -> material_behaviour
   return material_behaviour(false, vec3f(0.0));
 }
 
-fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f
-{
-  var maxbounces = i32(uniforms[2]);
-  var light = vec3f(0.0);
-  var color = vec3f(1.0);
-  var r_ = r;
-  
-  var backgroundcolor1 = int_to_rgb(i32(uniforms[11]));
-  var backgroundcolor2 = int_to_rgb(i32(uniforms[12]));
-  var behaviour = material_behaviour(true, vec3f(0.0));
+fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f {
+    var maxbounces = i32(uniforms[2]);
+    var light = vec3f(0.0);     // Accumulated light/color
+    var color = vec3f(1.0);     // Current ray color multiplier
+    var r_ = r;                 // Current ray being traced
+    
+    // Get background colors from uniforms
+    var backgroundcolor1 = int_to_rgb(i32(uniforms[11]));
+    var backgroundcolor2 = int_to_rgb(i32(uniforms[12]));
+    var behaviour = material_behaviour(true, vec3f(0.0));
 
-  for (var j = 0; j < maxbounces; j = j + 1)
-  {
+    // Main ray bouncing loop
+    for (var j = 0; j < maxbounces; j = j + 1) {
+        // Check for intersection with any object in the scene
+        var hit = check_ray_collision(r_, RAY_TMAX);
+        
+        // If we didn't hit anything, add background contribution and break
+        if (!hit.hit_anything) {
+            light += color * envoriment_color(r_.direction, backgroundcolor1, backgroundcolor2);
+            break;
+        }
 
-  }
+        // Get material properties from hit record
+        var mat_type = i32(hit.object_material.x);
+        var roughness = hit.object_material.y;
+        var ior = hit.object_material.z;     // Index of refraction
+        var emission = hit.object_material.w; // Emission strength
+        
+        // Get a random point in unit sphere for material calculations
+        var random_in_sphere = rng_next_vec3_in_unit_sphere(rng_state);
 
-  return light;
+        // Handle different material types
+        switch(mat_type) {
+            // Diffuse
+            case 0: {
+                behaviour = lambertian(hit.normal, roughness, random_in_sphere, rng_state);
+                color *= hit.object_color.rgb;
+            }
+            // Metallic
+            case 1: {
+                behaviour = metal(hit.normal, r_.direction, roughness, random_in_sphere);
+                color *= hit.object_color.rgb;
+            }
+            // Glass/Dielectric
+            case 2: {
+                behaviour = dielectric(hit.normal, r_.direction, ior, hit.frontface, 
+                                    random_in_sphere, roughness, rng_state);
+                color *= vec3f(0.98);
+            }
+            // Emissive
+            case 3: {
+                behaviour = emmisive(hit.object_color.rgb, emission);
+                light += color * hit.object_color.rgb * emission;
+                break;
+            }
+            default: {
+                behaviour = lambertian(hit.normal, roughness, random_in_sphere, rng_state);
+                color *= hit.object_color.rgb;
+            }
+        }
+
+        // If the material absorbed the ray (didn't scatter), break
+        if (!behaviour.scatter) {
+            break;
+        }
+
+        // Update ray for next bounce
+        r_ = ray(hit.p, behaviour.direction);
+    }
+
+    return light;
 }
 
 @compute @workgroup_size(THREAD_COUNT, THREAD_COUNT, 1)
@@ -217,29 +385,39 @@ fn render(@builtin(global_invocation_id) id : vec3u)
     var fragCoord = vec2f(f32(id.x), f32(id.y));
     var uv = (fragCoord + sample_square(&rng_state)) / vec2(rez);
 
-    // Camera
+    // Camera setup
     var lookfrom = vec3(uniforms[7], uniforms[8], uniforms[9]);
     var lookat = vec3(uniforms[23], uniforms[24], uniforms[25]);
-
-    // Get camera
     var cam = get_camera(lookfrom, lookat, vec3(0.0, 1.0, 0.0), uniforms[10], 1.0, uniforms[6], uniforms[5]);
+    
+    // Get number of samples per pixel from uniforms
     var samples_per_pixel = i32(uniforms[4]);
-
-    var color = vec3(rng_next_float(&rng_state), rng_next_float(&rng_state), rng_next_float(&rng_state));
-
-    // Steps:
+    
+    // Initialize accumulated color
+    var color = vec3f(0.0);
+    
     // 1. Loop for each sample per pixel
-    // 2. Get ray
-    // 3. Call trace function
-    // 4. Average the color
+    for(var s = 0; s < samples_per_pixel; s++) {
+        // 2. Get ray for this sample
+        var r = get_ray(cam, uv, &rng_state);
+        
+        // 3. Call trace function to get color for this ray
+        var sample_color = trace(r, &rng_state);
+        
+        // Accumulate the color
+        color += sample_color;
+    }
+    
+    // 4. Average the color by dividing by number of samples
+    color = color / f32(samples_per_pixel);
 
     var color_out = vec4(linear_to_gamma(color), 1.0);
+    
     var map_fb = mapfb(id.xy, rez);
     
-    // 5. Accumulate the color
     var should_accumulate = uniforms[3];
+    var accumulated_color = rtfb[map_fb] * should_accumulate + color_out;
 
-    // Set the color to the framebuffer
-    rtfb[map_fb] = color_out;
-    fb[map_fb] = color_out;
+    rtfb[map_fb] = accumulated_color;
+    fb[map_fb] = accumulated_color/accumulated_color.w;
 }
