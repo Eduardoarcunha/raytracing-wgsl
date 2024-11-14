@@ -260,8 +260,13 @@ fn lambertian(normal: vec3f, absorption: f32, random_sphere: vec3f, rng_state: p
         scatter_direction = normal;
     }
     
-    return material_behaviour(true, normalize(scatter_direction));
+    // The absorption parameter should affect the probability of the ray being absorbed
+    // rather than scattered. We can use it to determine if the ray should be terminated.
+    var should_scatter = rng_next_float(rng_state) > absorption;
+    
+    return material_behaviour(should_scatter, normalize(scatter_direction));
 }
+
 fn metal(normal: vec3f, direction: vec3f, fuzz: f32, random_sphere: vec3f) -> material_behaviour {
     var reflected = reflect(normalize(direction), normal);
     var scattered = reflected + fuzz * random_sphere;
@@ -274,6 +279,13 @@ fn metal(normal: vec3f, direction: vec3f, fuzz: f32, random_sphere: vec3f) -> ma
     return material_behaviour(should_scatter, normalize(scattered));
 }
 
+fn reflectance(cosine: f32, ref_idx: f32) -> f32 {
+    // Use Schlick's approximation for reflectance
+    var r0 = (1.0 - ref_idx) / (1.0 + ref_idx);
+    r0 = r0 * r0;
+    return r0 + (1.0 - r0) * pow((1.0 - cosine), 5.0);
+}
+
 fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontface: bool, random_sphere: vec3f, fuzz: f32, rng_state: ptr<function, u32>) -> material_behaviour
 {  
   return material_behaviour(false, vec3f(0.0));
@@ -281,7 +293,7 @@ fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontfa
 
 fn emmisive(color: vec3f, light: f32) -> material_behaviour
 {
-  return material_behaviour(false, vec3f(0.0));
+    return material_behaviour(false, color * light);
 }
 
 fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f {
@@ -307,16 +319,33 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f {
         var absorption = hit.object_material.y;
         var specular = hit.object_material.z;
         var emission = hit.object_material.w;
+
+        if (emission > 0.0) {
+          var emit_behaviour = emmisive(hit.object_color.rgb, emission);
+          light += color * emit_behaviour.direction;
+        }
         
         var random_in_sphere = rng_next_vec3_in_unit_sphere(rng_state);
         var random_value = rng_next_float(rng_state);
 
-        if (specular > random_value) {
-            behaviour = metal(hit.normal, r_.direction, absorption, random_in_sphere);
+        if (smoothness > 0.0) {
+            // Metallic material
+            if (specular > random_value) {
+                behaviour = metal(hit.normal, r_.direction, absorption, random_in_sphere);
+            } else {
+                behaviour = lambertian(hit.normal, absorption, random_in_sphere, rng_state);
+                color *= hit.object_color.rgb * (1.0 - absorption);
+            }
+        } else if (smoothness < 0.0) {
+            // Dielectric material
+            behaviour = lambertian(hit.normal, absorption, random_in_sphere, rng_state); // TO DO
         } else {
+            // Pure Lambertian material when smoothness = 0
             behaviour = lambertian(hit.normal, absorption, random_in_sphere, rng_state);
             color *= hit.object_color.rgb * (1.0 - absorption);
         }
+
+
 
         if (!behaviour.scatter) {
             break;
