@@ -6,13 +6,13 @@ fn hit_sphere(center: vec3f, radius: f32, r: ray, record: ptr<function, hit_reco
     let oc = r.origin - center;
     
     // Calculate quadratic equation coefficients
-    // For a sphere: (P(t) - C)² = R², where P(t) = O + tD
-    // Expanding gives us: (O + tD - C)² = R²
-    // This becomes: t²(D·D) + 2t(D·(O-C)) + ((O-C)·(O-C)) - R² = 0
+    // For a sphere: (P(t) - C)² = R², where P(t) = A + tb
+    // Expanding gives us: (A + tb - C)² = R²
+    // This becomes: t²(b·b) + 2tb·(A-C) + ((A-C)·(A-C)) - R² = 0
     // Which is a quadratic equation: at² + bt + c = 0
-    let a = dot(r.direction, r.direction);    // D·D
-    let half_b = dot(oc, r.direction);        // D·(O-C)
-    let c = dot(oc, oc) - radius * radius;    // (O-C)·(O-C) - R²
+    let a = dot(r.direction, r.direction);    // b·b
+    let half_b = dot(oc, r.direction);        // b·(A-C)
+    let c = dot(oc, oc) - radius * radius;    // (A-C)·(A-C) - R²
     
     // Calculate discriminant to determine number of intersections
     // discriminant = b² - 4ac

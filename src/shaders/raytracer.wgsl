@@ -251,42 +251,27 @@ fn check_ray_collision(r: ray, max: f32) -> hit_record {
 
     return closest;
 }
-// Simulates a diffuse (Lambertian) material reflection
-// Parameters:
-//   normal: Surface normal at hit point
-//   absorption: Material roughness (affects scatter direction)
-//   random_sphere: Random point in unit sphere for scatter direction
-//   rng_state: Random number generator state for additional randomization
-fn lambertian(normal: vec3f, absorption: f32, random_sphere: vec3f, rng_state: ptr<function, u32>) -> material_behaviour {
-    var scatter_direction: vec3f;
-    
-    // Perfect lambertian reflection would use normal + random unit vector
-    // Modified by absorption (roughness) to allow for more control
-    if (absorption <= 0.0) {
-        // Pure diffuse reflection: scatter in random direction in hemisphere
-        scatter_direction = normal + random_sphere;
-    } else {
-        // Mix between pure diffuse and more focused reflection
-        // Higher absorption means more scattering closer to the normal
-        scatter_direction = normalize(normal + absorption * random_sphere);
-    }
 
+fn lambertian(normal: vec3f, absorption: f32, random_sphere: vec3f, rng_state: ptr<function, u32>) -> material_behaviour {
+    var scatter_direction = normal + random_sphere;
+    
     // Catch degenerate scatter direction
-    // If scatter_direction is zero (or very close), use the normal
     if (length(scatter_direction) < 0.001) {
         scatter_direction = normal;
     }
-
-    // Always scatter (true) with the calculated direction
+    
     return material_behaviour(true, normalize(scatter_direction));
 }
-
-fn metal(normal : vec3f, direction: vec3f, fuzz: f32, random_sphere: vec3f) -> material_behaviour
-{
-  var reflect = direction - 2 * dot(direction, normal) * normal;
-  var scatter_direction = reflect + fuzz * random_sphere;
-
-  return material_behaviour(true, normalize(reflect));
+fn metal(normal: vec3f, direction: vec3f, fuzz: f32, random_sphere: vec3f) -> material_behaviour {
+    var reflected = reflect(normalize(direction), normal);
+    var scattered = reflected + fuzz * random_sphere;
+    
+    if (length(scattered) < 0.001) {
+        scattered = reflected;
+    }
+    
+    var should_scatter = dot(scattered, normal) > 0.0;
+    return material_behaviour(should_scatter, normalize(scattered));
 }
 
 fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontface: bool, random_sphere: vec3f, fuzz: f32, rng_state: ptr<function, u32>) -> material_behaviour
@@ -312,61 +297,33 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f {
 
     // Main ray bouncing loop
     for (var j = 0; j < maxbounces; j = j + 1) {
-        // Check for intersection with any object in the scene
-        var hit = check_ray_collision(r_, RAY_TMAX);
-        
-        // If we didn't hit anything, add background contribution and break
+        var hit = check_ray_collision(r_, RAY_TMAX);        
         if (!hit.hit_anything) {
             light += color * envoriment_color(r_.direction, backgroundcolor1, backgroundcolor2);
             break;
         }
 
-        // Get material properties from hit record
-        var mat_type = i32(hit.object_material.x);
-        var roughness = hit.object_material.y;
-        var ior = hit.object_material.z;     // Index of refraction
-        var emission = hit.object_material.w; // Emission strength
+        var smoothness = hit.object_material.x;
+        var absorption = hit.object_material.y;
+        var specular = hit.object_material.z;
+        var emission = hit.object_material.w;
         
-        // Get a random point in unit sphere for material calculations
         var random_in_sphere = rng_next_vec3_in_unit_sphere(rng_state);
+        var random_value = rng_next_float(rng_state);
 
-        // Handle different material types
-        switch(mat_type) {
-            // Diffuse
-            case 0: {
-                behaviour = lambertian(hit.normal, roughness, random_in_sphere, rng_state);
-                color *= hit.object_color.rgb;
-            }
-            // Metallic
-            case 1: {
-                behaviour = metal(hit.normal, r_.direction, roughness, random_in_sphere);
-                color *= hit.object_color.rgb;
-            }
-            // Glass/Dielectric
-            case 2: {
-                behaviour = dielectric(hit.normal, r_.direction, ior, hit.frontface, 
-                                    random_in_sphere, roughness, rng_state);
-                color *= vec3f(0.98);
-            }
-            // Emissive
-            case 3: {
-                behaviour = emmisive(hit.object_color.rgb, emission);
-                light += color * hit.object_color.rgb * emission;
-                break;
-            }
-            default: {
-                behaviour = lambertian(hit.normal, roughness, random_in_sphere, rng_state);
-                color *= hit.object_color.rgb;
-            }
+        if (specular > random_value) {
+            behaviour = metal(hit.normal, r_.direction, absorption, random_in_sphere);
+        } else {
+            behaviour = lambertian(hit.normal, absorption, random_in_sphere, rng_state);
+            color *= hit.object_color.rgb * (1.0 - absorption);
         }
 
-        // If the material absorbed the ray (didn't scatter), break
         if (!behaviour.scatter) {
             break;
         }
 
-        // Update ray for next bounce
-        r_ = ray(hit.p, behaviour.direction);
+        let offset = hit.normal * 0.0001;
+        r_ = ray(hit.p + offset, behaviour.direction);
     }
 
     return light;
