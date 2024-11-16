@@ -279,12 +279,6 @@ fn metal(normal: vec3f, direction: vec3f, fuzz: f32, random_sphere: vec3f) -> ma
     return material_behaviour(should_scatter, normalize(scattered));
 }
 
-fn reflectance(cosine: f32, ref_idx: f32) -> f32 {
-    // Use Schlick's approximation for reflectance
-    var r0 = (1.0 - ref_idx) / (1.0 + ref_idx);
-    r0 = r0 * r0;
-    return r0 + (1.0 - r0) * pow((1.0 - cosine), 5.0);
-}
 
 fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontface: bool, random_sphere: vec3f, fuzz: f32, rng_state: ptr<function, u32>) -> material_behaviour
 {  
