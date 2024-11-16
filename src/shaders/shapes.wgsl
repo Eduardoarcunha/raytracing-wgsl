@@ -42,13 +42,14 @@ fn hit_sphere(center: vec3f, radius: f32, r: ray, record: ptr<function, hit_reco
         }
     }
 
-    // Record the successful hit
     record.t = root;
-    // Calculate intersection point
     record.p = ray_at(r, root);
-    // Calculate normal (points outward from sphere center)
-    // Normal = (P - C)/R where P is intersection point and C is sphere center
-    record.normal = (record.p - center) / radius;
+    let outward_normal = (record.p - center) / radius;
+    
+    // Set frontface and adjust normal direction
+    record.frontface = dot(r.direction, outward_normal) < 0.0;
+    record.normal = select(-outward_normal, outward_normal, record.frontface);
+    
     record.hit_anything = true;
 }
 

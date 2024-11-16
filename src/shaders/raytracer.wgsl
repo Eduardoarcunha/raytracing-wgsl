@@ -280,9 +280,40 @@ fn metal(normal: vec3f, direction: vec3f, fuzz: f32, random_sphere: vec3f) -> ma
 }
 
 
-fn dielectric(normal : vec3f, r_direction: vec3f, refraction_index: f32, frontface: bool, random_sphere: vec3f, fuzz: f32, rng_state: ptr<function, u32>) -> material_behaviour
-{  
-  return material_behaviour(false, vec3f(0.0));
+fn dielectric(normal: vec3f, r_direction: vec3f, refraction_index: f32, frontface: bool, random_sphere: vec3f, fuzz: f32, rng_state: ptr<function, u32>) -> material_behaviour {
+    // Return white attenuation (no color absorption)
+    // Note: In the WGSL version, this is handled by not modifying the color in the trace function
+    
+    // Calculate refraction ratio based on whether we're entering or leaving the material
+    let ri = select(refraction_index, 1.0/refraction_index, frontface);
+    
+    // Get unit direction of incoming ray
+    let unit_direction = normalize(r_direction);
+    
+    // Calculate cosine of angle between ray and normal
+    let cos_theta = min(dot(-unit_direction, normal), 1.0);
+    let sin_theta = sqrt(1.0 - cos_theta * cos_theta);
+    
+    // Check if we can't refract (total internal reflection)
+    let cannot_refract = ri * sin_theta > 1.0;
+    
+    // Helper function for Schlick approximation (moved inline)
+    let r0 = (1.0 - ri) / (1.0 + ri);
+    let r0_squared = r0 * r0;
+    let schlick = r0_squared + (1.0 - r0_squared) * pow((1.0 - cos_theta), 5.0);
+    
+    var direction: vec3f;
+    if (cannot_refract || schlick > rng_next_float(rng_state)) {
+        // Must reflect
+        direction = reflect(unit_direction, normal);
+    } else {
+        // Can refract
+        let r_perp = ri * (unit_direction + cos_theta * normal);
+        let r_parallel = -sqrt(abs(1.0 - dot(r_perp, r_perp))) * normal;
+        direction = r_perp + r_parallel;
+    }
+    
+    return material_behaviour(true, normalize(direction));
 }
 
 fn emmisive(color: vec3f, light: f32) -> material_behaviour
@@ -332,13 +363,15 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f {
             }
         } else if (smoothness < 0.0) {
             // Dielectric material
-            behaviour = lambertian(hit.normal, absorption, random_in_sphere, rng_state); // TO DO
+            behaviour = dielectric(hit.normal, r_.direction, specular, hit.frontface, random_in_sphere, absorption, rng_state);
+            // behaviour = material_behaviour(true, (r_.direction));
+            r_ = ray(hit.p, behaviour.direction);
+            continue;
         } else {
             // Pure Lambertian material when smoothness = 0
             behaviour = lambertian(hit.normal, absorption, random_in_sphere, rng_state);
             color *= hit.object_color.rgb * (1.0 - absorption);
         }
-
 
 
         if (!behaviour.scatter) {
