@@ -212,8 +212,6 @@ fn check_ray_collision(r: ray, max: f32) -> hit_record {
     // Check all meshes (collections of triangles)
     for(var i = 0; i < meshCount; i++) {
         var mesh = meshb[i];
-        var quat = quaternion_from_euler(mesh.rotation.xyz);
-        var _quat = q_inverse(quat);
 
         if(mesh.show_bb <= 0.0) {
           // Check each triangle in the mesh
@@ -233,18 +231,6 @@ fn check_ray_collision(r: ray, max: f32) -> hit_record {
                 local_record.object_material = mesh.material;
                 closest = local_record;
             }
-          }
-        } else {
-          var local_record = record;
-          var center = (mesh.min.xyz + mesh.max.xyz) * 0.5 * mesh.scale.xyz;
-          var radius = (mesh.max.xyz - mesh.min.xyz) * 0.5 * mesh.scale.xyz;
-
-          if (local_record.hit_anything && local_record.t < closest.t) {
-              local_record.normal = rotate_vector(local_record.normal, _quat);
-              local_record.p = rotate_vector(local_record.p - mesh.transform.xyz, _quat) + mesh.transform.xyz;
-              closest = local_record;
-              closest.object_color = mesh.color;
-              closest.object_material = mesh.material;
           }
         }
     }
