@@ -209,43 +209,43 @@ fn check_ray_collision(r: ray, max: f32) -> hit_record {
         }
     }
 
-    // Check all triangles
-    for(var i = 0; i < trianglesCount; i++) {
-        var tri = trianglesb[i];
-        var local_record = record;
-        
-        hit_triangle(r, tri.v0.xyz, tri.v1.xyz, tri.v2.xyz, &local_record, closest_so_far);
-        
-        if(local_record.hit_anything) {
-            closest_so_far = local_record.t;
-            // Note: Triangles might need color/material from a different source
-            // like mesh or additional properties in triangle struct
-            closest = local_record;
-        }
-    }
-
     // Check all meshes (collections of triangles)
     for(var i = 0; i < meshCount; i++) {
         var mesh = meshb[i];
-        
-        // Skip if mesh is hidden
-        if(mesh.show_bb == 0.0) {
-            continue;
-        }
-        
-        // Check each triangle in the mesh
-        for(var j = i32(mesh.start); j < i32(mesh.end); j++) {
+        var quat = quaternion_from_euler(mesh.rotation.xyz);
+        var _quat = q_inverse(quat);
+
+        if(mesh.show_bb <= 0.0) {
+          // Check each triangle in the mesh
+          for(var j = i32(mesh.start); j < i32(mesh.end); j++) {
             var tri = trianglesb[j];
             var local_record = record;
             
-            hit_triangle(r, tri.v0.xyz, tri.v1.xyz, tri.v2.xyz, &local_record, closest_so_far);
+            var v0 = tri.v0.xyz * mesh.scale.xyz + mesh.transform.xyz;
+            var v1 = tri.v1.xyz * mesh.scale.xyz + mesh.transform.xyz;
+            var v2 = tri.v2.xyz * mesh.scale.xyz + mesh.transform.xyz;
             
-            if(local_record.hit_anything) {
+            hit_triangle(r, v0, v1, v2, &local_record, closest_so_far);
+            
+            if(local_record.hit_anything && local_record.t < closest.t) {
                 closest_so_far = local_record.t;
                 local_record.object_color = mesh.color;
                 local_record.object_material = mesh.material;
                 closest = local_record;
             }
+          }
+        } else {
+          var local_record = record;
+          var center = (mesh.min.xyz + mesh.max.xyz) * 0.5 * mesh.scale.xyz;
+          var radius = (mesh.max.xyz - mesh.min.xyz) * 0.5 * mesh.scale.xyz;
+
+          if (local_record.hit_anything && local_record.t < closest.t) {
+              local_record.normal = rotate_vector(local_record.normal, _quat);
+              local_record.p = rotate_vector(local_record.p - mesh.transform.xyz, _quat) + mesh.transform.xyz;
+              closest = local_record;
+              closest.object_color = mesh.color;
+              closest.object_material = mesh.material;
+          }
         }
     }
 
@@ -255,13 +255,10 @@ fn check_ray_collision(r: ray, max: f32) -> hit_record {
 fn lambertian(normal: vec3f, absorption: f32, random_sphere: vec3f, rng_state: ptr<function, u32>) -> material_behaviour {
     var scatter_direction = normal + random_sphere;
     
-    // Catch degenerate scatter direction
     if (length(scatter_direction) < 0.001) {
         scatter_direction = normal;
     }
     
-    // The absorption parameter should affect the probability of the ray being absorbed
-    // rather than scattered. We can use it to determine if the ray should be terminated.
     var should_scatter = rng_next_float(rng_state) > absorption;
     
     return material_behaviour(should_scatter, normalize(scatter_direction));
@@ -281,23 +278,19 @@ fn metal(normal: vec3f, direction: vec3f, fuzz: f32, random_sphere: vec3f) -> ma
 
 
 fn dielectric(normal: vec3f, r_direction: vec3f, refraction_index: f32, frontface: bool, random_sphere: vec3f, fuzz: f32, rng_state: ptr<function, u32>) -> material_behaviour {
-    // Return white attenuation (no color absorption)
-    // Note: In the WGSL version, this is handled by not modifying the color in the trace function
-    
-    // Calculate refraction ratio based on whether we're entering or leaving the material
+
+    // Refraction rate
     let ri = select(refraction_index, 1.0/refraction_index, frontface);
     
     // Get unit direction of incoming ray
     let unit_direction = normalize(r_direction);
     
-    // Calculate cosine of angle between ray and normal
     let cos_theta = min(dot(-unit_direction, normal), 1.0);
     let sin_theta = sqrt(1.0 - cos_theta * cos_theta);
     
     // Check if we can't refract (total internal reflection)
     let cannot_refract = ri * sin_theta > 1.0;
     
-    // Helper function for Schlick approximation (moved inline)
     let r0 = (1.0 - ri) / (1.0 + ri);
     let r0_squared = r0 * r0;
     let schlick = r0_squared + (1.0 - r0_squared) * pow((1.0 - cos_theta), 5.0);
@@ -327,12 +320,10 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f {
     var color = vec3f(1.0);     // Current ray color multiplier
     var r_ = r;                 // Current ray being traced
     
-    // Get background colors from uniforms
     var backgroundcolor1 = int_to_rgb(i32(uniforms[11]));
     var backgroundcolor2 = int_to_rgb(i32(uniforms[12]));
     var behaviour = material_behaviour(true, vec3f(0.0));
 
-    // Main ray bouncing loop
     for (var j = 0; j < maxbounces; j = j + 1) {
         var hit = check_ray_collision(r_, RAY_TMAX);        
         if (!hit.hit_anything) {
@@ -354,7 +345,7 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f {
         var random_value = rng_next_float(rng_state);
 
         if (smoothness > 0.0) {
-            // Metallic material
+            // Metal
             if (specular > random_value) {
                 behaviour = metal(hit.normal, r_.direction, absorption, random_in_sphere);
             } else {
@@ -362,13 +353,12 @@ fn trace(r: ray, rng_state: ptr<function, u32>) -> vec3f {
                 color *= hit.object_color.rgb * (1.0 - absorption);
             }
         } else if (smoothness < 0.0) {
-            // Dielectric material
+            // Dielectric
             behaviour = dielectric(hit.normal, r_.direction, specular, hit.frontface, random_in_sphere, absorption, rng_state);
-            // behaviour = material_behaviour(true, (r_.direction));
             r_ = ray(hit.p, behaviour.direction);
             continue;
         } else {
-            // Pure Lambertian material when smoothness = 0
+            // Lambertian
             behaviour = lambertian(hit.normal, absorption, random_in_sphere, rng_state);
             color *= hit.object_color.rgb * (1.0 - absorption);
         }
